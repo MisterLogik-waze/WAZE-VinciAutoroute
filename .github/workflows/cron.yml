@@ -1,18 +1,18 @@
-name: Event Link Generator Cron
+name: Event Link Generator & Discord Notifier
 
 on:
   schedule:
-    # S'exécute toutes les 15 minutes (ajuster selon les besoins)
-    - cron: '*/15 * * * *'
-  # Permet de lancer le workflow manuellement depuis GitHub
+    - cron: '*/5 * * * *'  # Exécution toutes les 5 minutes
   workflow_dispatch:
 
 jobs:
-  build-and-log:
+  build-and-notify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Nécessaire pour pouvoir faire le commit
 
     steps:
-      - name: Checkout du code
+      - name: Checkout du repo
         uses: actions/checkout@v4
 
       - name: Configuration de Node.js
@@ -24,4 +24,15 @@ jobs:
         run: npm install @actions/core
 
       - name: Exécution du script main.js
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: node main.js
+
+      - name: Commit & Push du fichier anti-redondance
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add sent_events.json
+          git status
+          # Ne commit que s'il y a eu des modifications dans sent_events.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: maj des alertes envoyées [skip ci]" && git push)
