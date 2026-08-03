@@ -32,7 +32,15 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # On ajoute uniquement le fichier sent_events.json
           git add sent_events.json
-          git status
-          # Ne commit que s'il y a eu des modifications dans sent_events.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: maj des alertes envoyées [skip ci]" && git push)
+          
+          # On vérifie s'il y a de vraies modifications sur ce fichier spécifique
+          if git diff --staged --quiet sent_events.json; then
+            echo "[INFO] Aucun changement dans sent_events.json. Pas de commit nécessaire."
+          else
+            echo "[INFO] Nouveaux événements enregistrés. Commit en cours..."
+            git commit -m "chore: mise à jour des alertes envoyées [skip ci]"
+            git push
+          fi
