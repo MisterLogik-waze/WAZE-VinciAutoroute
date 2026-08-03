@@ -9,7 +9,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const DB_FILE = path.join(process.cwd(), 'sent_events.json');
 
 // --- MOTS CLÉS & CONFIGURATION COULEURS ---
-const RED_KEYWORDS = ['toutes les voies', 'totale', 'totales', 'fermeture', 'fermé'];
+const RED_KEYWORDS = ['toutes les voies', 'totale', 'totales', 'Convoi exceptionnel', 'Accident'];
 const BLACKLIST_WORDS = ['mot-interdit', 'faux-accident']; // À compléter selon vos besoins
 
 const COLORS = {
