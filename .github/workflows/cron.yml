@@ -1,4 +1,4 @@
-name: Event Link Generator & Discord Notifier
+name: Manual Sender
 
 on:
   schedule:   
