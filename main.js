@@ -20,59 +20,65 @@ function toHexTimestamp(epochSeconds) {
   return epochSeconds.toString(16).toUpperCase().padStart(8, '0');
 }
 
-/**
- * Charge la liste des IDs déjà envoyés
- */
 function loadSentEvents() {
   if (fs.existsSync(DB_FILE)) {
     try {
       const data = fs.readFileSync(DB_FILE, 'utf8');
-      return new Set(JSON.parse(data));
+      const parsed = JSON.parse(data);
+      console.log(`[LOG DB] ${parsed.length} ID(s) d'alertes actuellement en mémoire dans sent_events.json.`);
+      return new Set(parsed);
     } catch (e) {
-      console.warn('[WARN] Impossible de lire sent_events.json, réinitialisation.');
+      console.warn('[WARN DB] Fichier sent_events.json illisible, création d\'une nouvelle liste.');
     }
+  } else {
+    console.log('[LOG DB] Aucun fichier sent_events.json trouvé. Initialisation.');
   }
   return new Set();
 }
 
-/**
- * Sauvegarde la liste mise à jour des IDs
- */
 function saveSentEvents(sentSet) {
-  // On ne garde que les 1000 derniers IDs pour éviter que le fichier ne devienne trop lourd
   const arrayToSave = Array.from(sentSet).slice(-1000);
   fs.writeFileSync(DB_FILE, JSON.stringify(arrayToSave, null, 2));
 }
 
 function parseEventsData(jsContent) {
   try {
+    // Tentative 1 : Regex classique sur "var eventsData = [...]"
     const match = jsContent.match(/var\s+eventsData\s*=\s*(\[\s*\{.*\}\s*\])\s*;?/s);
-    if (!match || !match[1]) {
-      const fallbackMatch = jsContent.match(/\[\s*\{.*\}\s*\]/s);
-      if (!fallbackMatch) return [];
+    if (match && match[1]) {
+      return JSON.parse(match[1]);
+    }
+    // Tentative 2 : Extraction brute du premier tableau JSON "[...]"
+    const fallbackMatch = jsContent.match(/\[\s*\{.*\}\s*\]/s);
+    if (fallbackMatch) {
       return JSON.parse(fallbackMatch[0]);
     }
-    return JSON.parse(match[1]);
+    // Si le tableau est vide (ex: "var eventsData = [];")
+    if (jsContent.includes('eventsData')) {
+      return [];
+    }
+    console.warn('[WARN PARSE] Impossible de trouver une structure de tableau dans le JS.');
+    return [];
   } catch (error) {
-    console.error(`[ERREUR] Parsing JSON : ${error.message}`);
+    console.error(`[ERREUR PARSE] Échec de la conversion JSON : ${error.message}`);
     return [];
   }
 }
 
-/**
- * Génère une empreinte unique si l'événement n'a pas d'ID explicite
- */
 function getEventId(event) {
   if (event.id) return String(event.id);
-  // Secours : clé basée sur le type, les coordonnées et la date/message
   const date = event.date || event.timestamp || '';
   const lat = event.lat || event.latitude || '';
   const lon = event.lon || event.lng || event.longitude || '';
-  return `${event.type || ''}_${lat}_${lon}_${date}`;
+  const type = event.type || event.code || '';
+  return `${type}_${lat}_${lon}_${date}`;
 }
 
 async function sendDiscordWebhook(event) {
-  if (!DISCORD_WEBHOOK_URL) return;
+  if (!DISCORD_WEBHOOK_URL) {
+    console.warn(`[WARN DISCORD] URL Webhook non renseignée ! Secret DISCORD_WEBHOOK_URL absent ?`);
+    return;
+  }
 
   const typeCode = (event.type || event.code || '').toUpperCase();
   const eventInfo = EVENT_TYPES[typeCode] || EVENT_TYPES['DEFAULT'];
@@ -101,64 +107,106 @@ async function sendDiscordWebhook(event) {
     ]
   };
 
-  await fetch(DISCORD_WEBHOOK_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(embedPayload)
-  });
+  try {
+    const res = await fetch(DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(embedPayload)
+    });
+
+    if (!res.ok) {
+      console.error(`[ERREUR DISCORD] Statut HTTP ${res.status}`);
+    } else {
+      console.log(`[SUCCÈS DISCORD] Notification envoyée avec succès pour l'événement ${getEventId(event)}.`);
+    }
+  } catch (err) {
+    console.error(`[ERREUR DISCORD] Échec de la requête : ${err.message}`);
+  }
 }
 
 async function run() {
-  const nowInSeconds = Math.floor(Date.now() / 1000);
+  const now = new Date();
+  const nowInSeconds = Math.floor(now.getTime() / 1000);
+
+  const timeUTC = now.toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
+  const timeParis = now.toLocaleString('fr-FR', { timeZone: 'Europe/Paris' });
+
+  console.log('--------------------------------------------------');
+  console.log(`[LOG HEURE] UTC   : ${timeUTC}`);
+  console.log(`[LOG HEURE] Paris : ${timeParis}`);
+  console.log(`[LOG HEURE] Hex initial (T=0) : ${toHexTimestamp(nowInSeconds)}`);
+  console.log('--------------------------------------------------');
+
+  let validUrl = null;
   let validData = null;
+  let validHex = null;
 
   for (let offset = 0; offset <= MAX_LOOKBACK_SECONDS; offset++) {
-    const hex = toHexTimestamp(nowInSeconds - offset);
+    const currentEpoch = nowInSeconds - offset;
+    const hex = toHexTimestamp(currentEpoch);
     const url = `${BASE_URL}/${hex}/events.js`;
+
     try {
       const res = await fetch(url);
       if (res.ok) {
         const text = await res.text();
-        if (text.includes('var eventsData =')) {
+        // On vérifie que la réponse contient "eventsData" ou un tableau JS
+        if (text.includes('eventsData') || text.includes('[')) {
+          validUrl = url;
           validData = text;
+          validHex = hex;
+          console.log(`[SUCCÈS FETCH] Fichier trouvé après -${offset}s de décalage !`);
           break;
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      // Poursuite de la recherche
+    }
   }
 
-  if (!validData) {
-    core.setFailed("Fichier events.js introuvable.");
+  if (!validUrl) {
+    console.error(`[ÉCHEC FETCH] Aucun fichier valide trouvé sur les ${MAX_LOOKBACK_SECONDS} dernières secondes.`);
+    core.setFailed("Impossible de trouver un timestamp valide sur autoroutes-trafic.fr.");
     return;
   }
 
+  console.log(`[LOG URL]  URL validée         : ${validUrl}`);
+  console.log(`[LOG HEX]  Timestamp retenu    : ${validHex}`);
+  console.log(`[LOG DATA] Taille du fichier   : ${validData.length} octets`);
+  console.log(`[LOG DATA] Aperçu du contenu  : ${validData.substring(0, 150)}...`);
+  console.log('--------------------------------------------------');
+
   const events = parseEventsData(validData);
+  console.log(`[LOG PARSE] ${events.length} événement(s) extrait(s) du fichier.`);
+
+  if (events.length === 0) {
+    console.log('[LOG PARSE] Aucun événement actif sur le réseau autoroutier pour le moment.');
+    return;
+  }
+
   const sentEvents = loadSentEvents();
   let newEventsCount = 0;
-
-  console.log(`[INFO] ${events.length} événement(s) au total dans le fichier.`);
 
   for (const event of events) {
     const eventId = getEventId(event);
 
-    // Déduplication : Si l'ID a déjà été traité, on passe
     if (sentEvents.has(eventId)) {
+      console.log(`[IGNORÉ] Alerte déjà envoyée précédemment (ID: ${eventId})`);
       continue;
     }
 
-    console.log(`[NOUVEAU] Envoi de l'alerte ID : ${eventId}`);
+    console.log(`[NÉCESSITE ENVOI] Nouvelle alerte trouvée ! (ID: ${eventId})`);
     await sendDiscordWebhook(event);
-    
-    // Ajout au Registre
+
     sentEvents.add(eventId);
     newEventsCount++;
   }
 
   if (newEventsCount > 0) {
     saveSentEvents(sentEvents);
-    console.log(`[SUCCÈS] ${newEventsCount} nouvelle(s) alerte(s) envoyée(s). Fichier sent_events.json mis à jour.`);
+    console.log(`[SUCCÈS TOTAL] ${newEventsCount} nouvelle(s) alerte(s) envoyée(s). Fichier sent_events.json mis à jour.`);
   } else {
-    console.log(`[INFO] Aucune nouvelle alerte à notifier.`);
+    console.log(`[INFO] Toutes les alertes du fichier avaient déjà été notifiées.`);
   }
 }
 
