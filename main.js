@@ -12,13 +12,12 @@ const DB_FILE = path.join(process.cwd(), 'sent_events.json');
 const RED_KEYWORDS = ['toutes les voies', 'totale', 'totales', 'fermeture', 'fermé'];
 const BLACKLIST_WORDS = ['mot-interdit', 'faux-accident']; // À compléter selon vos besoins
 
-// Code couleurs (en décimal pour Discord)
 const COLORS = {
   RED: 15158332,
   YELLOW: 16776960,
   BLUE: 3447003,
   GREY: 12370112,
-  BLACK: 1 // 1 plutôt que 0, car Discord ignore parfois la valeur 0 stricte
+  BLACK: 1
 };
 
 const EVENT_TYPES = {
@@ -33,6 +32,9 @@ const EVENT_TYPES = {
 function toHexTimestamp(epochSeconds) {
   return epochSeconds.toString(16).toUpperCase().padStart(8, '0');
 }
+
+// Petite fonction de pause pour éviter le Rate Limit (429) de Discord
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function loadSentEvents() {
   if (fs.existsSync(DB_FILE)) {
@@ -144,53 +146,40 @@ function getEventId(event) {
   return `${data.type}_${data.lat}_${data.lon}_${data.date}`;
 }
 
-/**
- * Détermine la couleur et tronque le message si nécessaire
- */
 function analyzeAlert(typeCode, originalMessage) {
-  let color = COLORS.BLUE; // Bleu par défaut (Classique)
+  let color = COLORS.BLUE; 
   let message = originalMessage;
   const msgLower = originalMessage.toLowerCase();
 
-  // 1. Vérification de la Blacklist (Noir + Tronqué)
   const isBlacklisted = BLACKLIST_WORDS.some(word => msgLower.includes(word));
   if (isBlacklisted) {
-    // On tronque le message pour cacher le reste de l'alerte
     const truncatedMsg = message.substring(0, 30) + '... [ALERTE TRONQUÉE / SÉCURITÉ]';
     return { color: COLORS.BLACK, message: truncatedMsg };
   }
 
-  // 2. Vérification des alertes graves (Rouge)
   const isRed = RED_KEYWORDS.some(word => msgLower.includes(word)) || typeCode === 'CO' || typeCode === 'AC';
-  
-  // 3. Vérification des travaux (Jaune)
   const isYellow = typeCode === 'TR' || msgLower.includes('travaux');
-  
-  // 4. Vérification des informations (Gris/Blanc)
   const isGrey = typeCode === 'IF' || msgLower.includes('information');
 
-  // Application de la priorité des couleurs
   if (isRed) {
     color = COLORS.RED;
   } else if (isYellow) {
     color = COLORS.YELLOW;
   } else if (isGrey) {
     color = COLORS.GREY;
-  } // sinon ça reste Bleu
+  }
 
   return { color, message };
 }
 
 async function sendDiscordWebhook(event) {
-  if (!DISCORD_WEBHOOK_URL) return;
+  if (!DISCORD_WEBHOOK_URL) return false;
 
   const data = extractEventData(event);
   const typeCode = data.type.toUpperCase();
   const eventInfo = EVENT_TYPES[typeCode] || EVENT_TYPES['DEFAULT'];
 
-  // Analyse intelligente de la description
   const { color, message: finalMessage } = analyzeAlert(typeCode, data.message);
-
   const wmeUrl = `https://www.waze.com/fr/editor?env=row&lat=${data.lat}&lon=${data.lon}&zoomLevel=18`;
 
   let formattedDate = data.date;
@@ -222,13 +211,21 @@ async function sendDiscordWebhook(event) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(embedPayload)
     });
+
     if (res.ok) {
       console.log(`[SUCCÈS DISCORD] Notification envoyée (Type: ${typeCode}, Couleur: ${color}).`);
+      return true;
+    } else if (res.status === 429) {
+      console.warn(`[RATE LIMIT] Discord 429 détecté. Nouvelle tentative après pause...`);
+      await sleep(2000); // Pause de 2 secondes en cas de blocage
+      return await sendDiscordWebhook(event); // On réessaie
     } else {
       console.error(`[ERREUR DISCORD] Statut HTTP ${res.status}`);
+      return false;
     }
   } catch (err) {
     console.error(`[ERREUR DISCORD] ${err.message}`);
+    return false;
   }
 }
 
@@ -268,12 +265,15 @@ async function run() {
     const eventId = getEventId(event);
     
     if (eventId === '___') continue;
-    
     if (sentEvents.has(eventId)) continue;
 
-    await sendDiscordWebhook(event);
-    sentEvents.add(eventId);
-    newEventsCount++;
+    // Envoi avec un délai de sécurité de 350ms entre chaque message pour immuniser contre le code 429
+    const success = await sendDiscordWebhook(event);
+    if (success) {
+      sentEvents.add(eventId);
+      newEventsCount++;
+      await sleep(350); 
+    }
   }
 
   if (newEventsCount > 0) {
