@@ -207,9 +207,9 @@ async function sendDiscordWebhook(event) {
         url: "https://www.vinci-autoroutes.com/fr/autoroutes-temps-reel/",
         color: color,
         description: [
-          `🕒 **Date** : ${formattedDate}`,
-          `📢 **Message** : ${finalMessage}`,
-          `📍 **Coordonnées** : ${data.lat}, ${data.lon} ([Ouvrir dans WME](${wmeUrl}))`
+          `   🕒 **Date** : ${formattedDate}`,
+          `   📢 **Message** : ${finalMessage}`,
+          `   📍 **Coordonnées** : ${data.lat}, ${data.lon} ([Ouvrir dans WME](${wmeUrl}))`
         ].join('\n'),
         footer: { text: "Radio 107.7 - Trafic Temps Réel" }
       }
