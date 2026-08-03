@@ -1,0 +1,27 @@
+name: Event Link Generator Cron
+
+on:
+  schedule:
+    # S'exécute toutes les 15 minutes (ajuster selon les besoins)
+    - cron: '*/15 * * * *'
+  # Permet de lancer le workflow manuellement depuis GitHub
+  workflow_dispatch:
+
+jobs:
+  build-and-log:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Configuration de Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Installation des dépendances
+        run: npm install @actions/core
+
+      - name: Exécution du script main.js
+        run: node main.js
