@@ -9,8 +9,8 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const DB_FILE = path.join(process.cwd(), 'sent_events.json');
 
 // --- MOTS CLÉS & CONFIGURATION COULEURS ---
-const RED_KEYWORDS = ['toutes les voies', 'totale', 'totales', 'Convoi exceptionnel', 'Accident'];
-const BLACKLIST_WORDS = ['mot-interdit', 'faux-accident']; // À compléter selon vos besoins
+const RED_KEYWORDS = ['toutes les voies', 'totale', 'totales';
+const BLACKLIST_WORDS = ['mot-interdit', 'faux-accident'];
 
 const COLORS = {
   RED: 15158332,
@@ -33,7 +33,6 @@ function toHexTimestamp(epochSeconds) {
   return epochSeconds.toString(16).toUpperCase().padStart(8, '0');
 }
 
-// Petite fonction de pause pour éviter le Rate Limit (429) de Discord
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function loadSentEvents() {
@@ -182,9 +181,14 @@ async function sendDiscordWebhook(event) {
   const { color, message: finalMessage } = analyzeAlert(typeCode, data.message);
   const wmeUrl = `https://www.waze.com/fr/editor?env=row&lat=${data.lat}&lon=${data.lon}&zoomLevel=18`;
 
+  // Formatage de la date brute sans décalage horaire (ex: "2026-08-03T05:31:30" -> "03/08/2026 05:31:30")
   let formattedDate = data.date;
   try {
-    formattedDate = new Date(data.date).toLocaleString('fr-FR', { timeZone: 'Europe/Paris' });
+    if (data.date && data.date.includes('T')) {
+      const [datePart, timePart] = data.date.split('T');
+      const [year, month, day] = datePart.split('-');
+      formattedDate = `${day}/${month}/${year} ${timePart}`;
+    }
   } catch (e) {}
 
   const embedPayload = {
@@ -195,10 +199,11 @@ async function sendDiscordWebhook(event) {
         title: `${eventInfo.emoji} ${eventInfo.label}`,
         url: "https://www.vinci-autoroutes.com/fr/autoroutes-temps-reel/",
         color: color,
+        // Ajout du préfixe "> " pour indenter (décaler) le texte sur la droite
         description: [
-          `_ _		🕒 **Date** : ${formattedDate}`,
-          `_ _		📢 **Message** : ${finalMessage}`,
-          `_ _		📍 **Coordonnées** : ${data.lat}, ${data.lon} ([Ouvrir dans WME](${wmeUrl}))`
+          `> 🕒 **Date** : ${formattedDate}`,
+          `> 📢 **Message** : ${finalMessage}`,
+          `> 📍 **Coordonnées** : ${data.lat}, ${data.lon} ([Ouvrir dans WME](${wmeUrl}))`
         ].join('\n'),
         footer: { text: "Radio 107.7 - Trafic Temps Réel" }
       }
@@ -217,8 +222,8 @@ async function sendDiscordWebhook(event) {
       return true;
     } else if (res.status === 429) {
       console.warn(`[RATE LIMIT] Discord 429 détecté. Nouvelle tentative après pause...`);
-      await sleep(2000); // Pause de 2 secondes en cas de blocage
-      return await sendDiscordWebhook(event); // On réessaie
+      await sleep(2000); 
+      return await sendDiscordWebhook(event); 
     } else {
       console.error(`[ERREUR DISCORD] Statut HTTP ${res.status}`);
       return false;
@@ -267,7 +272,6 @@ async function run() {
     if (eventId === '___') continue;
     if (sentEvents.has(eventId)) continue;
 
-    // Envoi avec un délai de sécurité de 350ms entre chaque message pour immuniser contre le code 429
     const success = await sendDiscordWebhook(event);
     if (success) {
       sentEvents.add(eventId);
