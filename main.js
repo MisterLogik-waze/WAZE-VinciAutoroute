@@ -1,56 +1,86 @@
 import * as core from '@actions/core';
 
+// Configuration
+const BASE_URL = 'https://wt3.autoroutes-trafic.fr//realtime/trafficevents';
+const MAX_LOOKBACK_SECONDS = 90; // Recherche jusqu'à 90 secondes dans le passé
+
 /**
- * Génère les informations de timestamp et d'URL
+ * Convertit un timestamp Unix (en secondes) en hexadécimal sur 8 caractères
  */
-function generateTrafficLink() {
-  const now = new Date();
-  
-  // Timestamp Unix en secondes
-  const epochSeconds = Math.floor(now.getTime() / 1000);
-  
-  // Conversion en hexadécimal majuscule (8 caractères)
-  const hexTimestamp = epochSeconds.toString(16).toUpperCase().padStart(8, '0');
-
-  // Formatage lisible des dates pour les logs
-  const timeUTC = now.toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
-  const timeParis = now.toLocaleString('fr-FR', { 
-    timeZone: 'Europe/Paris', 
-    dateStyle: 'short', 
-    timeStyle: 'medium' 
-  });
-
-  // URL définitive (double slash conservé strict)
-  const targetUrl = `https://wt3.autoroutes-trafic.fr//realtime/trafficevents/${hexTimestamp}/events.js`;
-
-  return {
-    timeUTC,
-    timeParis,
-    hexTimestamp,
-    targetUrl
-  };
+function toHexTimestamp(epochSeconds) {
+  return epochSeconds.toString(16).toUpperCase().padStart(8, '0');
 }
 
-function run() {
+/**
+ * Teste une URL donnée et valide le contenu JS
+ */
+async function testUrl(targetUrl) {
   try {
-    const { timeUTC, timeParis, hexTimestamp, targetUrl } = generateTrafficLink();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000); // Timeout de 3s par requête
 
-    // Log clair dans la console GitHub Actions
-    console.log('--------------------------------------------------');
-    console.log(`[LOG] Heure détectée (UTC)   : ${timeUTC}`);
-    console.log(`[LOG] Heure détectée (Paris) : ${timeParis}`);
-    console.log(`[LOG] Timestamp (Hex)        : ${hexTimestamp}`);
-    console.log(`[LOG] Lien définitif         : ${targetUrl}`);
-    console.log('--------------------------------------------------');
+    const response = await fetch(targetUrl, { signal: controller.signal });
+    clearTimeout(timeoutId);
 
-    // Transmission des variables aux étapes suivantes du workflow si besoin
-    core.setOutput('time_utc', timeUTC);
-    core.setOutput('time_paris', timeParis);
-    core.setOutput('hex_timestamp', hexTimestamp);
-    core.setOutput('target_url', targetUrl);
+    if (!response.ok) return { success: false };
 
+    const text = await response.text();
+    
+    // Validation du contenu : doit commencer par 'var eventsData ='
+    if (text.includes('var eventsData =')) {
+      return { success: true, data: text };
+    }
+
+    return { success: false };
   } catch (error) {
-    core.setFailed(`[ERREUR] Impossible de générer le lien : ${error.message}`);
+    return { success: false };
+  }
+}
+
+async function run() {
+  const nowInSeconds = Math.floor(Date.now() / 1000);
+  console.log(`[INFO] Début du balayage à partir du timestamp actuel : ${toHexTimestamp(nowInSeconds)}`);
+
+  let foundUrl = null;
+  let validData = null;
+  let validHex = null;
+  let offsetFound = 0;
+
+  // On boucle de 0 à MAX_LOOKBACK_SECONDS en arrière dans le temps
+  for (let offset = 0; offset <= MAX_LOOKBACK_SECONDS; offset++) {
+    const currentEpoch = nowInSeconds - offset;
+    const hex = toHexTimestamp(currentEpoch);
+    const testTargetUrl = `${BASE_URL}/${hex}/events.js`;
+
+    const result = await testUrl(testTargetUrl);
+
+    if (result.success) {
+      foundUrl = testTargetUrl;
+      validData = result.data;
+      validHex = hex;
+      offsetFound = offset;
+      break; // On a trouvé le bon lien, on arrête la boucle
+    }
+  }
+
+  // Bilan et logs
+  console.log('--------------------------------------------------');
+  if (foundUrl) {
+    console.log(`[SUCCÈS] Lien valide trouvé !`);
+    console.log(`[LOG] Timestamp Valide (Hex) : ${validHex}`);
+    console.log(`[LOG] Décalage détecté      : -${offsetFound} seconde(s)`);
+    console.log(`[LOG] Lien fonctionnel       : ${foundUrl}`);
+    console.log(`[LOG] Extrait du contenu     : ${validData.substring(0, 100)}...`);
+    console.log('--------------------------------------------------');
+
+    // Outputs pour GitHub Actions
+    core.setOutput('hex_timestamp', validHex);
+    core.setOutput('target_url', foundUrl);
+    core.setOutput('events_data', validData);
+  } else {
+    console.log(`[ÉCHEC] Aucun lien valide trouvé sur les ${MAX_LOOKBACK_SECONDS} dernières secondes.`);
+    console.log('--------------------------------------------------');
+    core.setFailed(`Impossible de trouver un timestamp valide pour events.js`);
   }
 }
 
