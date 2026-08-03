@@ -8,6 +8,19 @@ const MAX_LOOKBACK_SECONDS = 180;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const DB_FILE = path.join(process.cwd(), 'sent_events.json');
 
+// --- MOTS CLÉS & CONFIGURATION COULEURS ---
+const RED_KEYWORDS = ['toutes les voies', 'totale', 'totales', 'fermeture', 'fermé'];
+const BLACKLIST_WORDS = ['mot-interdit', 'faux-accident']; // À compléter selon vos besoins
+
+// Code couleurs (en décimal pour Discord)
+const COLORS = {
+  RED: 15158332,
+  YELLOW: 16776960,
+  BLUE: 3447003,
+  GREY: 12370112,
+  BLACK: 1 // 1 plutôt que 0, car Discord ignore parfois la valeur 0 stricte
+};
+
 const EVENT_TYPES = {
   'AC': { label: 'Accident', emoji: '💥' },
   'CO': { label: 'Fermeture / Coupure', emoji: '⛔' },
@@ -102,9 +115,6 @@ function parseEventsData(jsContent) {
   }
 }
 
-/**
- * Extrait proprement les données du tableau spécifique à events.js
- */
 function extractEventData(event) {
   if (!Array.isArray(event) || event.length < 4) {
     return { type: '', date: '', message: '', lat: '0', lon: '0' };
@@ -117,16 +127,13 @@ function extractEventData(event) {
   let lat = '0';
   let lon = '0';
   try {
-    // Les coordonnées sont dans le premier objet du tableau de l'index 0
     const zoomLevels = Object.values(event[0]);
     if (zoomLevels.length > 0) {
-      const coords = zoomLevels[0][0]; // Récupère le bloc [lat, lon]
+      const coords = zoomLevels[0][0]; 
       lat = coords[0];
       lon = coords[1];
     }
-  } catch (e) {
-    // Sécurité au cas où la structure GPS changerait
-  }
+  } catch (e) {}
 
   return { type, date, message, lat, lon };
 }
@@ -137,6 +144,43 @@ function getEventId(event) {
   return `${data.type}_${data.lat}_${data.lon}_${data.date}`;
 }
 
+/**
+ * Détermine la couleur et tronque le message si nécessaire
+ */
+function analyzeAlert(typeCode, originalMessage) {
+  let color = COLORS.BLUE; // Bleu par défaut (Classique)
+  let message = originalMessage;
+  const msgLower = originalMessage.toLowerCase();
+
+  // 1. Vérification de la Blacklist (Noir + Tronqué)
+  const isBlacklisted = BLACKLIST_WORDS.some(word => msgLower.includes(word));
+  if (isBlacklisted) {
+    // On tronque le message pour cacher le reste de l'alerte
+    const truncatedMsg = message.substring(0, 30) + '... [ALERTE TRONQUÉE / SÉCURITÉ]';
+    return { color: COLORS.BLACK, message: truncatedMsg };
+  }
+
+  // 2. Vérification des alertes graves (Rouge)
+  const isRed = RED_KEYWORDS.some(word => msgLower.includes(word)) || typeCode === 'CO' || typeCode === 'AC';
+  
+  // 3. Vérification des travaux (Jaune)
+  const isYellow = typeCode === 'TR' || msgLower.includes('travaux');
+  
+  // 4. Vérification des informations (Gris/Blanc)
+  const isGrey = typeCode === 'IF' || msgLower.includes('information');
+
+  // Application de la priorité des couleurs
+  if (isRed) {
+    color = COLORS.RED;
+  } else if (isYellow) {
+    color = COLORS.YELLOW;
+  } else if (isGrey) {
+    color = COLORS.GREY;
+  } // sinon ça reste Bleu
+
+  return { color, message };
+}
+
 async function sendDiscordWebhook(event) {
   if (!DISCORD_WEBHOOK_URL) return;
 
@@ -144,9 +188,11 @@ async function sendDiscordWebhook(event) {
   const typeCode = data.type.toUpperCase();
   const eventInfo = EVENT_TYPES[typeCode] || EVENT_TYPES['DEFAULT'];
 
+  // Analyse intelligente de la description
+  const { color, message: finalMessage } = analyzeAlert(typeCode, data.message);
+
   const wmeUrl = `https://www.waze.com/fr/editor?env=row&lat=${data.lat}&lon=${data.lon}&zoomLevel=18`;
 
-  // Formatage de la date (conversion ISO vers lisible)
   let formattedDate = data.date;
   try {
     formattedDate = new Date(data.date).toLocaleString('fr-FR', { timeZone: 'Europe/Paris' });
@@ -154,16 +200,16 @@ async function sendDiscordWebhook(event) {
 
   const embedPayload = {
     username: "Notification Carte 107.7",
-    avatar_url: "https://www.vinci-autoroutes.com/favicon.ico",
+    avatar_url: "https://play-lh.googleusercontent.com/blGO7H3iQBS5_vQ3L4rjHqGqHU_jyFbgl-jDNi7DTpmme-aSjxZP5_aC89SYie2fvxUuQR2MgyolLfxMpRlmyg",
     embeds: [
       {
         title: `${eventInfo.emoji} ${eventInfo.label}`,
         url: "https://www.vinci-autoroutes.com/fr/autoroutes-temps-reel/",
-        color: (typeCode === 'CO' || typeCode === 'AC') ? 15158332 : 16753920,
+        color: color,
         description: [
           `🕒 **Date** : ${formattedDate}`,
-          `📢 **Message** : ${data.message}`,
-          `📍 **Coordonnées** : Lat ${data.lat}, Lon ${data.lon} ([Ouvrir dans WME](${wmeUrl}))`
+          `📢 **Message** : ${finalMessage}`,
+          `📍 **Coordonnées** : ${data.lat}, ${data.lon} ([Ouvrir dans WME](${wmeUrl}))`
         ].join('\n'),
         footer: { text: "Radio 107.7 - Trafic Temps Réel" }
       }
@@ -177,7 +223,7 @@ async function sendDiscordWebhook(event) {
       body: JSON.stringify(embedPayload)
     });
     if (res.ok) {
-      console.log(`[SUCCÈS DISCORD] Notification envoyée (Type: ${data.type}).`);
+      console.log(`[SUCCÈS DISCORD] Notification envoyée (Type: ${typeCode}, Couleur: ${color}).`);
     } else {
       console.error(`[ERREUR DISCORD] Statut HTTP ${res.status}`);
     }
@@ -221,13 +267,9 @@ async function run() {
   for (const event of events) {
     const eventId = getEventId(event);
     
-    // Si l'ID est invalide, on saute
     if (eventId === '___') continue;
     
-    // Déduplication
-    if (sentEvents.has(eventId)) {
-      continue;
-    }
+    if (sentEvents.has(eventId)) continue;
 
     await sendDiscordWebhook(event);
     sentEvents.add(eventId);
