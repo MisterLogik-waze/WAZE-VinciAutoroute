@@ -42,12 +42,10 @@ async function testUrl(targetUrl) {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 4000);
-
     const response = await fetch(targetUrl, { signal: controller.signal });
     clearTimeout(timeoutId);
 
     if (!response.ok) return { success: false };
-
     const text = await response.text();
     const cleanText = text.trim();
     
@@ -77,7 +75,6 @@ function parseEventsData(jsContent) {
 
     for (let i = arrayStartIndex; i < jsContent.length; i++) {
       const char = jsContent[i];
-
       if (isEscaped) { isEscaped = false; continue; }
       if (char === '\\') { isEscaped = true; continue; }
       if (char === '"') { inString = !inString; continue; }
@@ -105,24 +102,55 @@ function parseEventsData(jsContent) {
   }
 }
 
+/**
+ * Extrait proprement les données du tableau spécifique à events.js
+ */
+function extractEventData(event) {
+  if (!Array.isArray(event) || event.length < 4) {
+    return { type: '', date: '', message: '', lat: '0', lon: '0' };
+  }
+
+  const type = event[1] || '';
+  const date = event[2] || '';
+  const message = (event[3] && event[3].FR) ? event[3].FR : "Aucun détail fourni";
+  
+  let lat = '0';
+  let lon = '0';
+  try {
+    // Les coordonnées sont dans le premier objet du tableau de l'index 0
+    const zoomLevels = Object.values(event[0]);
+    if (zoomLevels.length > 0) {
+      const coords = zoomLevels[0][0]; // Récupère le bloc [lat, lon]
+      lat = coords[0];
+      lon = coords[1];
+    }
+  } catch (e) {
+    // Sécurité au cas où la structure GPS changerait
+  }
+
+  return { type, date, message, lat, lon };
+}
+
 function getEventId(event) {
-  if (event.id) return String(event.id);
-  const date = event.date || event.timestamp || '';
-  const lat = event.lat || event.latitude || '';
-  const lon = event.lon || event.lng || event.longitude || '';
-  const type = event.type || event.code || '';
-  return `${type}_${lat}_${lon}_${date}`;
+  const data = extractEventData(event);
+  if (!data.type && !data.date) return '___';
+  return `${data.type}_${data.lat}_${data.lon}_${data.date}`;
 }
 
 async function sendDiscordWebhook(event) {
   if (!DISCORD_WEBHOOK_URL) return;
 
-  const typeCode = (event.type || event.code || '').toUpperCase();
+  const data = extractEventData(event);
+  const typeCode = data.type.toUpperCase();
   const eventInfo = EVENT_TYPES[typeCode] || EVENT_TYPES['DEFAULT'];
 
-  const lat = event.lat || event.latitude || '0';
-  const lon = event.lon || event.lng || event.longitude || '0';
-  const wmeUrl = `https://www.waze.com/fr/editor?env=row&lat=${lat}&lon=${lon}&zoomLevel=18`;
+  const wmeUrl = `https://www.waze.com/fr/editor?env=row&lat=${data.lat}&lon=${data.lon}&zoomLevel=18`;
+
+  // Formatage de la date (conversion ISO vers lisible)
+  let formattedDate = data.date;
+  try {
+    formattedDate = new Date(data.date).toLocaleString('fr-FR', { timeZone: 'Europe/Paris' });
+  } catch (e) {}
 
   const embedPayload = {
     username: "Notification Carte 107.7",
@@ -133,9 +161,9 @@ async function sendDiscordWebhook(event) {
         url: "https://www.vinci-autoroutes.com/fr/autoroutes-temps-reel/",
         color: (typeCode === 'CO' || typeCode === 'AC') ? 15158332 : 16753920,
         description: [
-          `🕒 **Date** : ${event.date || event.timestamp || 'N/C'}`,
-          `📢 **Message** : ${event.message || event.description || 'Aucun détail fourni'}`,
-          `📍 **Coordonnées** : Lat ${lat}, Lon ${lon} ([Ouvrir dans WME](${wmeUrl}))`
+          `🕒 **Date** : ${formattedDate}`,
+          `📢 **Message** : ${data.message}`,
+          `📍 **Coordonnées** : Lat ${data.lat}, Lon ${data.lon} ([Ouvrir dans WME](${wmeUrl}))`
         ].join('\n'),
         footer: { text: "Radio 107.7 - Trafic Temps Réel" }
       }
@@ -149,7 +177,9 @@ async function sendDiscordWebhook(event) {
       body: JSON.stringify(embedPayload)
     });
     if (res.ok) {
-      console.log(`[SUCCÈS DISCORD] Notification envoyée pour l'événement ${getEventId(event)}.`);
+      console.log(`[SUCCÈS DISCORD] Notification envoyée (Type: ${data.type}).`);
+    } else {
+      console.error(`[ERREUR DISCORD] Statut HTTP ${res.status}`);
     }
   } catch (err) {
     console.error(`[ERREUR DISCORD] ${err.message}`);
@@ -185,31 +215,31 @@ async function run() {
 
   if (events.length === 0) return;
 
-  // --- INSPECTION DES DONNÉES ---
-  console.log('--------------------------------------------------');
-  console.log('--- STRUCTURE BRUTE D\'UN ÉVÉNEMENT ---');
-  console.log(JSON.stringify(events[0], null, 2));
-  console.log('--------------------------------------------------');
-
-  const testId = getEventId(events[0]);
-  if (testId === '___') {
-    core.setFailed("Structure des données inconnue. Exécution arrêtée par sécurité.");
-    return;
-  }
-
   const sentEvents = loadSentEvents();
   let newEventsCount = 0;
 
   for (const event of events) {
     const eventId = getEventId(event);
-    if (sentEvents.has(eventId)) continue;
+    
+    // Si l'ID est invalide, on saute
+    if (eventId === '___') continue;
+    
+    // Déduplication
+    if (sentEvents.has(eventId)) {
+      continue;
+    }
 
     await sendDiscordWebhook(event);
     sentEvents.add(eventId);
     newEventsCount++;
   }
 
-  if (newEventsCount > 0) saveSentEvents(sentEvents);
+  if (newEventsCount > 0) {
+    saveSentEvents(sentEvents);
+    console.log(`[SUCCÈS] ${newEventsCount} nouvelle(s) alerte(s) envoyée(s).`);
+  } else {
+    console.log(`[INFO] Aucune nouvelle alerte. Le fichier est à jour.`);
+  }
 }
 
 run();
