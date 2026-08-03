@@ -2,85 +2,136 @@ import * as core from '@actions/core';
 
 // Configuration
 const BASE_URL = 'https://wt3.autoroutes-trafic.fr//realtime/trafficevents';
-const MAX_LOOKBACK_SECONDS = 90; // Recherche jusqu'à 90 secondes dans le passé
+const MAX_LOOKBACK_SECONDS = 90;
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+
+// Dictionnaire des types d'alertes avec emojis
+const EVENT_TYPES = {
+  'AC': { label: 'Accident', emoji: '💥' },
+  'CO': { label: 'Fermeture / Coupure', emoji: '⛔' },
+  'TR': { label: 'Travaux', emoji: '🚧' },
+  'IN': { label: 'Incident / Obstacle', emoji: '⚠️' },
+  'IF': { label: 'Information / Service', emoji: 'ℹ️' },
+  'DEFAULT': { label: 'Restriction de voie', emoji: '🚗' }
+};
 
 /**
- * Convertit un timestamp Unix (en secondes) en hexadécimal sur 8 caractères
+ * Convertit un timestamp Unix en hexadécimal
  */
 function toHexTimestamp(epochSeconds) {
   return epochSeconds.toString(16).toUpperCase().padStart(8, '0');
 }
 
 /**
- * Teste une URL donnée et valide le contenu JS
+ * Extrait le tableau JS `var eventsData = [...]` sous forme d'objet JSON manipulable
  */
-async function testUrl(targetUrl) {
+function parseEventsData(jsContent) {
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000); // Timeout de 3s par requête
-
-    const response = await fetch(targetUrl, { signal: controller.signal });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) return { success: false };
-
-    const text = await response.text();
-    
-    // Validation du contenu : doit commencer par 'var eventsData ='
-    if (text.includes('var eventsData =')) {
-      return { success: true, data: text };
+    // Extraction de ce qui se trouve entre le premier '[' et le dernier ']'
+    const match = jsContent.match(/var\s+eventsData\s*=\s*(\[\s*\{.*\}\s*\])\s*;?/s);
+    if (!match || !match[1]) {
+      // Tendance de secours si la syntaxe varie légèrement
+      const fallbackMatch = jsContent.match(/\[\s*\{.*\}\s*\]/s);
+      if (!fallbackMatch) return [];
+      return JSON.parse(fallbackMatch[0]);
     }
-
-    return { success: false };
+    return JSON.parse(match[1]);
   } catch (error) {
-    return { success: false };
+    console.error(`[ERREUR] Échec du parsing JSON : ${error.message}`);
+    return [];
+  }
+}
+
+/**
+ * Formate et envoie un Embed vers le Webhook Discord
+ */
+async function sendDiscordWebhook(event) {
+  if (!DISCORD_WEBHOOK_URL) {
+    console.warn(`[WARN] Pas de DISCORD_WEBHOOK_URL configuré. Envoi ignoré.`);
+    return;
+  }
+
+  // Détermination du type d'alerte et de l'emoji
+  const typeCode = (event.type || event.code || '').toUpperCase();
+  const eventInfo = EVENT_TYPES[typeCode] || EVENT_TYPES['DEFAULT'];
+
+  const lat = event.lat || event.latitude || '0';
+  const lon = event.lon || event.lng || event.longitude || '0';
+  
+  // Construction du lien WME (Waze Map Editor)
+  const wmeUrl = `https://www.waze.com/fr/editor?env=row&lat=${lat}&lon=${lon}&zoomLevel=18`;
+
+  const embedPayload = {
+    username: "Notification Carte 107.7",
+    avatar_url: "https://www.vinci-autoroutes.com/favicon.ico",
+    embeds: [
+      {
+        title: `${eventInfo.emoji} ${eventInfo.label}`,
+        url: "https://www.vinci-autoroutes.com/fr/autoroutes-temps-reel/",
+        color: typeCode === 'CO' || typeCode === 'AC' ? 15158332 : 16753920, // Rouge si Coupure/Accident, Orange sinon
+        description: [
+          `🕒 **Date** : ${event.date || event.timestamp || 'N/C'}`,
+          `📢 **Message** : ${event.message || event.description || 'Aucun détail fourni'}`,
+          `📍 **Coordonnées** : Lat ${lat}, Lon ${lon} ([Ouvrir dans WME](${wmeUrl}))`
+        ].join('\n'),
+        footer: {
+          text: "Radio 107.7 - Trafic Temps Réel"
+        }
+      }
+    ]
+  };
+
+  try {
+    const res = await fetch(DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(embedPayload)
+    });
+
+    if (!res.ok) {
+      console.error(`[ERREUR Discord] Statut ${res.status} lors de l'envoi.`);
+    } else {
+      console.log(`[SUCCÈS Discord] Alerte envoyée : ${eventInfo.label}`);
+    }
+  } catch (err) {
+    console.error(`[ERREUR Discord] ${err.message}`);
   }
 }
 
 async function run() {
   const nowInSeconds = Math.floor(Date.now() / 1000);
-  console.log(`[INFO] Début du balayage à partir du timestamp actuel : ${toHexTimestamp(nowInSeconds)}`);
-
-  let foundUrl = null;
   let validData = null;
-  let validHex = null;
-  let offsetFound = 0;
 
-  // On boucle de 0 à MAX_LOOKBACK_SECONDS en arrière dans le temps
   for (let offset = 0; offset <= MAX_LOOKBACK_SECONDS; offset++) {
-    const currentEpoch = nowInSeconds - offset;
-    const hex = toHexTimestamp(currentEpoch);
-    const testTargetUrl = `${BASE_URL}/${hex}/events.js`;
+    const hex = toHexTimestamp(nowInSeconds - offset);
+    const url = `${BASE_URL}/${hex}/events.js`;
 
-    const result = await testUrl(testTargetUrl);
-
-    if (result.success) {
-      foundUrl = testTargetUrl;
-      validData = result.data;
-      validHex = hex;
-      offsetFound = offset;
-      break; // On a trouvé le bon lien, on arrête la boucle
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const text = await res.text();
+        if (text.includes('var eventsData =')) {
+          validData = text;
+          break;
+        }
+      }
+    } catch (e) {
+      // Ignorer les erreurs réseau temporaires pendant la recherche
     }
   }
 
-  // Bilan et logs
-  console.log('--------------------------------------------------');
-  if (foundUrl) {
-    console.log(`[SUCCÈS] Lien valide trouvé !`);
-    console.log(`[LOG] Timestamp Valide (Hex) : ${validHex}`);
-    console.log(`[LOG] Décalage détecté      : -${offsetFound} seconde(s)`);
-    console.log(`[LOG] Lien fonctionnel       : ${foundUrl}`);
-    console.log(`[LOG] Extrait du contenu     : ${validData.substring(0, 100)}...`);
-    console.log('--------------------------------------------------');
+  if (!validData) {
+    core.setFailed("Impossible de récupérer un fichier events.js valide.");
+    return;
+  }
 
-    // Outputs pour GitHub Actions
-    core.setOutput('hex_timestamp', validHex);
-    core.setOutput('target_url', foundUrl);
-    core.setOutput('events_data', validData);
-  } else {
-    console.log(`[ÉCHEC] Aucun lien valide trouvé sur les ${MAX_LOOKBACK_SECONDS} dernières secondes.`);
-    console.log('--------------------------------------------------');
-    core.setFailed(`Impossible de trouver un timestamp valide pour events.js`);
+  // Parsing des événements
+  const events = parseEventsData(validData);
+  console.log(`[INFO] ${events.length} événement(s) trouvé(s) dans le fichier.`);
+
+  // Traitement et envoi de chaque alerte sur Discord
+  for (const event of events) {
+    await sendDiscordWebhook(event);
   }
 }
 
