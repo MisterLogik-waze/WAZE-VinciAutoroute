@@ -1,27 +1,56 @@
 import * as core from '@actions/core';
 
-function getHexTimestamp() {
-  // Timestamp actuel en secondes (arrondi à l'entier inférieur)
-  const epochSeconds = Math.floor(Date.now() / 1000);
+/**
+ * Génère les informations de timestamp et d'URL
+ */
+function generateTrafficLink() {
+  const now = new Date();
   
-  // Conversion en hexadécimal (sur 8 caractères, rempli de '0' au besoin)
-  return epochSeconds.toString(16).toUpperCase().padStart(8, '0');
+  // Timestamp Unix en secondes
+  const epochSeconds = Math.floor(now.getTime() / 1000);
+  
+  // Conversion en hexadécimal majuscule (8 caractères)
+  const hexTimestamp = epochSeconds.toString(16).toUpperCase().padStart(8, '0');
+
+  // Formatage lisible des dates pour les logs
+  const timeUTC = now.toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
+  const timeParis = now.toLocaleString('fr-FR', { 
+    timeZone: 'Europe/Paris', 
+    dateStyle: 'short', 
+    timeStyle: 'medium' 
+  });
+
+  // URL définitive (double slash conservé strict)
+  const targetUrl = `https://wt3.autoroutes-trafic.fr//realtime/trafficevents/${hexTimestamp}/events.js`;
+
+  return {
+    timeUTC,
+    timeParis,
+    hexTimestamp,
+    targetUrl
+  };
 }
 
 function run() {
   try {
-    const hexTimestamp = getHexTimestamp();
-    const targetUrl = `https://wt3.test.fr//realtime/${hexTimestamp}/events.js`;
+    const { timeUTC, timeParis, hexTimestamp, targetUrl } = generateTrafficLink();
 
-    // Logs visibles dans la console GitHub Actions
-    console.log(`[INFO] Timestamp Hex généré : ${hexTimestamp}`);
-    console.log(`[INFO] URL finale générée  : ${targetUrl}`);
+    // Log clair dans la console GitHub Actions
+    console.log('--------------------------------------------------');
+    console.log(`[LOG] Heure détectée (UTC)   : ${timeUTC}`);
+    console.log(`[LOG] Heure détectée (Paris) : ${timeParis}`);
+    console.log(`[LOG] Timestamp (Hex)        : ${hexTimestamp}`);
+    console.log(`[LOG] Lien définitif         : ${targetUrl}`);
+    console.log('--------------------------------------------------');
 
-    // Export sous forme de variable d'output GitHub Actions (utile si d'autres étapes en ont besoin)
+    // Transmission des variables aux étapes suivantes du workflow si besoin
+    core.setOutput('time_utc', timeUTC);
+    core.setOutput('time_paris', timeParis);
     core.setOutput('hex_timestamp', hexTimestamp);
     core.setOutput('target_url', targetUrl);
+
   } catch (error) {
-    core.setFailed(`Erreur lors de l'exécution : ${error.message}`);
+    core.setFailed(`[ERREUR] Impossible de générer le lien : ${error.message}`);
   }
 }
 
