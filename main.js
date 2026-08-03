@@ -122,7 +122,7 @@ function extractEventData(event) {
   }
 
   const type = event[1] || '';
-  const date = event[2] || '';
+  const date = event[2] || ''; // Date brute UTC (ex: 2026-08-03T05:31:30) conservée pour l'ID et la logique
   const message = (event[3] && event[3].FR) ? event[3].FR : "Aucun détail fourni";
   
   let lat = '0';
@@ -181,29 +181,32 @@ async function sendDiscordWebhook(event) {
   const { color, message: finalMessage } = analyzeAlert(typeCode, data.message);
   const wmeUrl = `https://www.waze.com/fr/editor?env=row&lat=${data.lat}&lon=${data.lon}&zoomLevel=18`;
 
-  // Formatage de la date brute sans décalage horaire (ex: "2026-08-03T05:31:30" -> "03/08/2026 05:31:30")
+  // Conversion explicite de l'heure UTC du flux vers l'heure de Paris
   let formattedDate = data.date;
   try {
-    if (data.date && data.date.includes('T')) {
-      const [datePart, timePart] = data.date.split('T');
-      const [year, month, day] = datePart.split('-');
-      formattedDate = `${day}/${month}/${year} ${timePart}`;
-    }
-  } catch (e) {}
+    // On s'assure d'ajouter le 'Z' final si absent pour forcer la lecture en UTC
+    const utcString = data.date.endsWith('Z') ? data.date : data.date + 'Z';
+    formattedDate = new Date(utcString).toLocaleString('fr-FR', { 
+      timeZone: 'Europe/Paris',
+      dateStyle: 'short',
+      timeStyle: 'medium'
+    });
+  } catch (e) {
+    formattedDate = data.date; // Fallback sur la valeur brute en cas d'erreur
+  }
 
   const embedPayload = {
     username: "Notification Carte 107.7",
-    avatar_url: "https://play-lh.googleusercontent.com/blGO7H3iQBS5_vQ3L4rjHqGqHU_jyFbgl-jDNi7DTpmme-aSjxZP5_aC89SYie2fvxUuQR2MgyolLfxMpRlmyg",
+    avatar_url: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSv4X6IK_nt0lbL9sXV2yAEuUvGe5ZSGdYqfKsaPqbOtw&s=10",
     embeds: [
       {
         title: `${eventInfo.emoji} ${eventInfo.label}`,
         url: "https://www.vinci-autoroutes.com/fr/autoroutes-temps-reel/",
         color: color,
-        // Ajout du préfixe "> " pour indenter (décaler) le texte sur la droite
         description: [
-          `> 🕒 **Date** : ${formattedDate}`,
-          `> 📢 **Message** : ${finalMessage}`,
-          `> 📍 **Coordonnées** : ${data.lat}, ${data.lon} ([Ouvrir dans WME](${wmeUrl}))`
+          `🕒 **Date** : ${formattedDate}`,
+          `📢 **Message** : ${finalMessage}`,
+          `📍 **Coordonnées** : ${data.lat}, ${data.lon} ([Ouvrir dans WME](${wmeUrl}))`
         ].join('\n'),
         footer: { text: "Radio 107.7 - Trafic Temps Réel" }
       }
@@ -222,8 +225,8 @@ async function sendDiscordWebhook(event) {
       return true;
     } else if (res.status === 429) {
       console.warn(`[RATE LIMIT] Discord 429 détecté. Nouvelle tentative après pause...`);
-      await sleep(2000); 
-      return await sendDiscordWebhook(event); 
+      await sleep(2000);
+      return await sendDiscordWebhook(event);
     } else {
       console.error(`[ERREUR DISCORD] Statut HTTP ${res.status}`);
       return false;
