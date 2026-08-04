@@ -212,16 +212,16 @@ async function sendDiscordWebhook(event) {
 
   const embedPayload = {
     username: "Notification Carte 107.7",
-    avatar_url: "https://www.vinci-autoroutes.com/favicon.ico",
+    avatar_url: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSv4X6IK_nt0lbL9sXV2yAEuUvGe5ZSGdYqfKsaPqbOtw&s=10",
     embeds: [
       {
         title: `${eventInfo.emoji} ${eventInfo.label}`,
         url: "https://www.vinci-autoroutes.com/fr/autoroutes-temps-reel/",
         color: color,
         description: [
-          `🕒 **Date** : ${formattedDate}`,
-          `📢 **Message** : ${finalMessage}`,
-          `📍 **Coordonnées** : ${data.lat}, ${data.lon} ([Ouvrir dans WME](${wmeUrl}))`
+          `> 🕒 **Date** : ${formattedDate}`,
+          `> 📢 **Message** : ${finalMessage}`,
+          `> 📍 **Coordonnées** : ${data.lat}, ${data.lon} ([Ouvrir dans WME](${wmeUrl}))`
         ].join('\n'),
         footer: { text: "Radio 107.7 - Trafic Temps Réel" }
       }
