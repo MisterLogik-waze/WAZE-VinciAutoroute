@@ -11,7 +11,7 @@ const DB_FILE = path.join(process.cwd(), 'sent_events.json');
 // --- MOTS CLÉS PAR NIVEAU DE PRIORITÉ ---
 const BLACKLIST_WORDS = ['mot-interdit', 'faux-accident']; // Noir (Priorité 1)
 const RED_KEYWORDS = ['toutes les voies', 'deux sens', 'totale', 'totales']; // Rouge (Priorité 2)
-const ORANGE_KEYWORDS = ['voie de', 'voies de', 'fermeture', 'fermé']; // Orange (Priorité 3)
+const ORANGE_KEYWORDS = ['voie de', 'voies de', 'fermeture', 'fermé', 'voies neutralisées', 'neutralisé']; // Orange (Priorité 3)
 const YELLOW_KEYWORDS = ['travaux', 'chantier']; // Jaune (Priorité 4)
 const WHITE_KEYWORDS = ["distribution d'essence", 'carburant', 'essence', 'station-service']; // Blanc (Priorité 5)
 
