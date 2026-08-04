@@ -8,16 +8,21 @@ const MAX_LOOKBACK_SECONDS = 180;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const DB_FILE = path.join(process.cwd(), 'sent_events.json');
 
-// --- MOTS CLÉS & CONFIGURATION COULEURS ---
-const RED_KEYWORDS = ['toutes les voies', 'totale', 'totales'];
-const BLACKLIST_WORDS = ['mot-interdit', 'faux-accident'];
+// --- MOTS CLÉS PAR NIVEAU DE PRIORITÉ ---
+const BLACKLIST_WORDS = ['mot-interdit', 'faux-accident']; // Noir (Priorité 1)
+const RED_KEYWORDS = ['toutes les voies', 'deux sens', 'totale', 'totales', 'fermeture', 'fermé']; // Rouge (Priorité 2)
+const ORANGE_KEYWORDS = ['voie de', 'voies de']; // Orange (Priorité 3)
+const YELLOW_KEYWORDS = ['travaux', 'chantier']; // Jaune (Priorité 4)
+const WHITE_KEYWORDS = ["distribution d'essence", 'carburant', 'essence', 'station-service']; // Blanc (Priorité 5)
 
+// Codes couleurs en décimal pour Discord
 const COLORS = {
-  RED: 15158332,
-  YELLOW: 16776960,
-  BLUE: 3447003,
-  GREY: 12370112,
-  BLACK: 1
+  BLACK: 1,        // Noir
+  RED: 15158332,   // Rouge
+  ORANGE: 15105570,// Orange
+  YELLOW: 16776960,// Jaune
+  WHITE: 16777215, // Blanc
+  BLUE: 3447003    // Bleu (Par défaut)
 };
 
 const EVENT_TYPES = {
@@ -122,7 +127,7 @@ function extractEventData(event) {
   }
 
   const type = event[1] || '';
-  const date = event[2] || ''; // Date brute UTC (ex: 2026-08-03T05:31:30) conservée pour l'ID et la logique
+  const date = event[2] || '';
   const message = (event[3] && event[3].FR) ? event[3].FR : "Aucun détail fourni";
   
   let lat = '0';
@@ -145,30 +150,41 @@ function getEventId(event) {
   return `${data.type}_${data.lat}_${data.lon}_${data.date}`;
 }
 
-function analyzeAlert(typeCode, originalMessage) {
-  let color = COLORS.BLUE; 
+/**
+ * Analyse la description et attribue la couleur selon l'ordre strict de priorité
+ */
+function analyzeAlert(originalMessage) {
   let message = originalMessage;
   const msgLower = originalMessage.toLowerCase();
 
-  const isBlacklisted = BLACKLIST_WORDS.some(word => msgLower.includes(word));
-  if (isBlacklisted) {
+  // 1. Noir (Blacklist) -> Tronquer le message
+  if (BLACKLIST_WORDS.some(word => msgLower.includes(word))) {
     const truncatedMsg = message.substring(0, 30) + '... [ALERTE TRONQUÉE / SÉCURITÉ]';
     return { color: COLORS.BLACK, message: truncatedMsg };
   }
 
-  const isRed = RED_KEYWORDS.some(word => msgLower.includes(word)) || typeCode === 'CO' || typeCode === 'AC';
-  const isYellow = typeCode === 'TR' || msgLower.includes('travaux');
-  const isGrey = typeCode === 'IF' || msgLower.includes('information');
-
-  if (isRed) {
-    color = COLORS.RED;
-  } else if (isYellow) {
-    color = COLORS.YELLOW;
-  } else if (isGrey) {
-    color = COLORS.GREY;
+  // 2. Rouge (Mots-clés critiques)
+  if (RED_KEYWORDS.some(word => msgLower.includes(word))) {
+    return { color: COLORS.RED, message };
   }
 
-  return { color, message };
+  // 3. Orange (Mots-clés d'impact voies)
+  if (ORANGE_KEYWORDS.some(word => msgLower.includes(word))) {
+    return { color: COLORS.ORANGE, message };
+  }
+
+  // 4. Jaune (Travaux)
+  if (YELLOW_KEYWORDS.some(word => msgLower.includes(word))) {
+    return { color: COLORS.YELLOW, message };
+  }
+
+  // 5. Blanc (Services / Carburant)
+  if (WHITE_KEYWORDS.some(word => msgLower.includes(word))) {
+    return { color: COLORS.WHITE, message };
+  }
+
+  // 6. Bleu (Par défaut pour tous les autres cas)
+  return { color: COLORS.BLUE, message };
 }
 
 async function sendDiscordWebhook(event) {
@@ -178,13 +194,12 @@ async function sendDiscordWebhook(event) {
   const typeCode = data.type.toUpperCase();
   const eventInfo = EVENT_TYPES[typeCode] || EVENT_TYPES['DEFAULT'];
 
-  const { color, message: finalMessage } = analyzeAlert(typeCode, data.message);
+  // Analyse exclusive basée sur la description
+  const { color, message: finalMessage } = analyzeAlert(data.message);
   const wmeUrl = `https://www.waze.com/fr/editor?env=row&lat=${data.lat}&lon=${data.lon}&zoomLevel=18`;
 
-  // Conversion explicite de l'heure UTC du flux vers l'heure de Paris
   let formattedDate = data.date;
   try {
-    // On s'assure d'ajouter le 'Z' final si absent pour forcer la lecture en UTC
     const utcString = data.date.endsWith('Z') ? data.date : data.date + 'Z';
     formattedDate = new Date(utcString).toLocaleString('fr-FR', { 
       timeZone: 'Europe/Paris',
@@ -192,21 +207,21 @@ async function sendDiscordWebhook(event) {
       timeStyle: 'medium'
     });
   } catch (e) {
-    formattedDate = data.date; // Fallback sur la valeur brute en cas d'erreur
+    formattedDate = data.date;
   }
 
   const embedPayload = {
     username: "Notification Carte 107.7",
-    avatar_url: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSv4X6IK_nt0lbL9sXV2yAEuUvGe5ZSGdYqfKsaPqbOtw&s=10",
+    avatar_url: "https://www.vinci-autoroutes.com/favicon.ico",
     embeds: [
       {
         title: `${eventInfo.emoji} ${eventInfo.label}`,
         url: "https://www.vinci-autoroutes.com/fr/autoroutes-temps-reel/",
         color: color,
         description: [
-          `> 🕒 **Date** : ${formattedDate}`,
-          `> 📢 **Message** : ${finalMessage}`,
-          `> 📍 **Coordonnées** : ${data.lat}, ${data.lon} ([Ouvrir dans WME](${wmeUrl}))`
+          `🕒 **Date** : ${formattedDate}`,
+          `📢 **Message** : ${finalMessage}`,
+          `📍 **Coordonnées** : ${data.lat}, ${data.lon} ([Ouvrir dans WME](${wmeUrl}))`
         ].join('\n'),
         footer: { text: "Radio 107.7 - Trafic Temps Réel" }
       }
