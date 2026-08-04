@@ -8,6 +8,9 @@ const MAX_LOOKBACK_SECONDS = 180;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const DB_FILE = path.join(process.cwd(), 'sent_events.json');
 
+// --- FILTRAGE ET FIL D'ATTENTE ---
+const ONLY_SEND_RED = true; 
+
 // --- MOTS CLÉS PAR NIVEAU DE PRIORITÉ ---
 const BLACKLIST_WORDS = ['mot-interdit', 'faux-accident']; // Noir (Priorité 1)
 const RED_KEYWORDS = ['toutes les voies', 'deux sens', 'totale', 'totales']; // Rouge (Priorité 2)
@@ -183,7 +186,7 @@ function analyzeAlert(originalMessage) {
     return { color: COLORS.WHITE, message };
   }
 
-  // 6. Bleu (Par défaut pour tous les autres cas)
+  // 6. Bleu (Par défaut)
   return { color: COLORS.BLUE, message };
 }
 
@@ -194,8 +197,13 @@ async function sendDiscordWebhook(event) {
   const typeCode = data.type.toUpperCase();
   const eventInfo = EVENT_TYPES[typeCode] || EVENT_TYPES['DEFAULT'];
 
-  // Analyse exclusive basée sur la description
   const { color, message: finalMessage } = analyzeAlert(data.message);
+
+  // Filtrage : Ignorer si l'option est activée et que l'alerte n'est pas ROUGE
+  if (ONLY_SEND_RED && color !== COLORS.RED) {
+    return false;
+  }
+
   const wmeUrl = `https://www.waze.com/fr/editor?env=row&lat=${data.lat}&lon=${data.lon}&zoomLevel=18`;
 
   let formattedDate = data.date;
@@ -236,7 +244,7 @@ async function sendDiscordWebhook(event) {
     });
 
     if (res.ok) {
-      console.log(`[SUCCÈS DISCORD] Notification envoyée (Type: ${typeCode}, Couleur: ${color}).`);
+      console.log(`[SUCCÈS DISCORD] Alerte rouge envoyée (Type: ${typeCode}).`);
       return true;
     } else if (res.status === 429) {
       console.warn(`[RATE LIMIT] Discord 429 détecté. Nouvelle tentative après pause...`);
@@ -295,14 +303,20 @@ async function run() {
       sentEvents.add(eventId);
       newEventsCount++;
       await sleep(350); 
+    } else {
+      // Si l'événement est ignoré (car non rouge), on le marque tout de même comme vu
+      // pour éviter de le réévaluer inutilement à chaque exécution.
+      sentEvents.add(eventId);
     }
   }
 
   if (newEventsCount > 0) {
     saveSentEvents(sentEvents);
-    console.log(`[SUCCÈS] ${newEventsCount} nouvelle(s) alerte(s) envoyée(s).`);
+    console.log(`[SUCCÈS] ${newEventsCount} nouvelle(s) alerte(s) rouge(s) envoyée(s).`);
   } else {
-    console.log(`[INFO] Aucune nouvelle alerte. Le fichier est à jour.`);
+    // Sauvegarde également pour conserver les IDs des événements ignorés
+    saveSentEvents(sentEvents);
+    console.log(`[INFO] Aucune nouvelle alerte rouge à envoyer.`);
   }
 }
 
