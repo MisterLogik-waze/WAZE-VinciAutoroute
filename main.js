@@ -15,7 +15,7 @@ const ONLY_SEND_RED = true;
 const BLACKLIST_WORDS = ['mot-interdit', 'faux-accident']; // Noir (Priorité 1)
 
 const RED_KEYWORDS = ['toutes les voies', 'deux sens', 'totale', 'totales', 'Chaussée coupée', 'Route fermée']; 
-const RED_EXCLUDE_KEYWORDS = ['Reduction de vitesse', 'Circulation alternée', 'Restriction de voie', 'Voies rétrécies', 'Dépassement interdit'];
+const RED_EXCLUDE_KEYWORDS = ['Reduction de vitesse', 'Circulation alternée', 'Restriction de voie', 'Voies rétrécies', 'Dépassement interdit', 'Réduction du nombre de voies', 'Obstacle '];
 
 const ORANGE_KEYWORDS = ['voie de', 'voies de', 'fermeture', 'fermé', 'voies neutralisées', 'neutralisé']; // Orange (Priorité 3)
 const YELLOW_KEYWORDS = ['travaux', 'chantier']; // Jaune (Priorité 4)
