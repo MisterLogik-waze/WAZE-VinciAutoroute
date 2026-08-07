@@ -13,7 +13,10 @@ const ONLY_SEND_RED = true;
 
 // --- MOTS CLÉS PAR NIVEAU DE PRIORITÉ ---
 const BLACKLIST_WORDS = ['mot-interdit', 'faux-accident']; // Noir (Priorité 1)
-const RED_KEYWORDS = ['toutes les voies', 'deux sens', 'totale', 'totales']; // Rouge (Priorité 2)
+
+const RED_KEYWORDS = ['toutes les voies', 'deux sens', 'totale', 'totales', 'Chaussée coupée', 'Route fermée']; 
+const RED_EXCLUDE_KEYWORDS = ['Reduction de vitesse', 'Circulation alternée', 'Restriction de voie', 'Voies rétrécies', 'Dépassement interdit'];
+
 const ORANGE_KEYWORDS = ['voie de', 'voies de', 'fermeture', 'fermé', 'voies neutralisées', 'neutralisé']; // Orange (Priorité 3)
 const YELLOW_KEYWORDS = ['travaux', 'chantier']; // Jaune (Priorité 4)
 const WHITE_KEYWORDS = ["distribution d'essence", 'carburant', 'essence', 'station-service']; // Blanc (Priorité 5)
@@ -160,14 +163,17 @@ function analyzeAlert(originalMessage) {
   let message = originalMessage;
   const msgLower = originalMessage.toLowerCase();
 
-  // 1. Noir (Blacklist) -> Tronquer le message
+  // 1. Noir (Blacklist globale) -> Tronquer le message
   if (BLACKLIST_WORDS.some(word => msgLower.includes(word))) {
     const truncatedMsg = message.substring(0, 30) + '... [ALERTE TRONQUÉE / SÉCURITÉ]';
     return { color: COLORS.BLACK, message: truncatedMsg };
   }
 
-  // 2. Rouge (Mots-clés critiques)
-  if (RED_KEYWORDS.some(word => msgLower.includes(word))) {
+  // 2. Rouge (Mots-clés critiques SANS les mots d'exclusion)
+  const hasRedKeyword = RED_KEYWORDS.some(word => msgLower.includes(word));
+  const hasRedExcludeKeyword = RED_EXCLUDE_KEYWORDS.some(word => msgLower.includes(word));
+
+  if (hasRedKeyword && !hasRedExcludeKeyword) {
     return { color: COLORS.RED, message };
   }
 
@@ -304,8 +310,7 @@ async function run() {
       newEventsCount++;
       await sleep(350); 
     } else {
-      // Si l'événement est ignoré (car non rouge), on le marque tout de même comme vu
-      // pour éviter de le réévaluer inutilement à chaque exécution.
+      // Marquer l'événement non retenu comme vu
       sentEvents.add(eventId);
     }
   }
@@ -314,7 +319,6 @@ async function run() {
     saveSentEvents(sentEvents);
     console.log(`[SUCCÈS] ${newEventsCount} nouvelle(s) alerte(s) rouge(s) envoyée(s).`);
   } else {
-    // Sauvegarde également pour conserver les IDs des événements ignorés
     saveSentEvents(sentEvents);
     console.log(`[INFO] Aucune nouvelle alerte rouge à envoyer.`);
   }
